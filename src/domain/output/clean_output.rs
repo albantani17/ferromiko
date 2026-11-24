@@ -29,14 +29,14 @@ mod tests {
 
     #[test]
     fn removes_echo_and_trailing_prompt() {
-        let prompt = prompt_pattern("R1");
+        let prompt = prompt_pattern("R1", "#>$%");
         let output = "show clock\n12:00:00 WIB\nR1#";
         assert_eq!(clean_output(output, "show clock", Some(&prompt)), "12:00:00 WIB");
     }
 
     #[test]
     fn keeps_multi_line_body() {
-        let prompt = prompt_pattern("R1");
+        let prompt = prompt_pattern("R1", "#>$%");
         let output = "show ip int brief\nGi0/0 up\nGi0/1 down\nR1#";
         assert_eq!(clean_output(output, "show ip int brief", Some(&prompt)), "Gi0/0 up\nGi0/1 down");
     }
@@ -49,13 +49,13 @@ mod tests {
 
     #[test]
     fn keeps_first_line_when_it_is_not_the_echo() {
-        let prompt = prompt_pattern("R1");
+        let prompt = prompt_pattern("R1", "#>$%");
         assert_eq!(clean_output("hello\nR1#", "echo hello", Some(&prompt)), "hello");
     }
 
     #[test]
     fn returns_empty_when_only_echo_and_prompt() {
-        let prompt = prompt_pattern("R1");
+        let prompt = prompt_pattern("R1", "#>$%");
         assert_eq!(clean_output("terminal length 0\nR1#", "terminal length 0", Some(&prompt)), "");
     }
 

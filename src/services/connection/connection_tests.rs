@@ -205,3 +205,138 @@ fn connect_times_out_when_device_never_shows_a_prompt() {
     let result = Connection::from_transport(transport, DeviceType::CiscoIos, None, Duration::from_millis(100));
     assert!(matches!(result, Err(Error::Timeout { .. })));
 }
+
+const HUAWEI_VRP_LOGIN: &[(&str, &str)] = &[
+    ("", "\r\n<HUAWEI>"),
+    (
+        "screen-length 0 temporary",
+        "screen-length 0 temporary\r\nInfo: The configuration takes effect on the current user terminal interface only.\r\n<HUAWEI>",
+    ),
+];
+
+#[test]
+fn huawei_send_command_strips_echo_and_prompt() {
+    let mut connection = connect(
+        DeviceType::Huawei,
+        "\r\nInfo: The max number of VTY users is 5.\r\n<HUAWEI>",
+        &[
+            HUAWEI_VRP_LOGIN,
+            &[("display version", "display version\r\nHuawei Versatile Routing Platform Software\r\nVRP (R) software, Version 5.170\r\n<HUAWEI>")],
+        ],
+    );
+    assert_eq!(
+        connection.send_command("display version").unwrap(),
+        "Huawei Versatile Routing Platform Software\nVRP (R) software, Version 5.170"
+    );
+}
+
+#[test]
+fn huawei_declines_password_change_at_login() {
+    connect(
+        DeviceType::Huawei,
+        "\r\nThe password needs to be changed. Change now? [Y/N]:",
+        &[&[("N", "N\r\nInfo: The max number of VTY users is 5.\r\n<HUAWEI>")], HUAWEI_VRP_LOGIN],
+    );
+}
+
+#[test]
+fn huawei_send_config_set_uses_system_view_and_return() {
+    let mut connection = connect(
+        DeviceType::Huawei,
+        "\r\n<HUAWEI>",
+        &[
+            HUAWEI_VRP_LOGIN,
+            &[
+                ("", "\r\n<HUAWEI>"),
+                ("system-view", "system-view\r\nEnter system view, return user view with Ctrl+Z.\r\n[HUAWEI]"),
+                ("", "\r\n[HUAWEI]"),
+                ("interface GigabitEthernet0/0/1", "interface GigabitEthernet0/0/1\r\n[HUAWEI-GigabitEthernet0/0/1]"),
+                ("description uplink", "description uplink\r\n[HUAWEI-GigabitEthernet0/0/1]"),
+                ("", "\r\n[HUAWEI-GigabitEthernet0/0/1]"),
+                ("return", "return\r\n<HUAWEI>"),
+                ("", "\r\n<HUAWEI>"),
+            ],
+        ],
+    );
+    let output = connection.send_config_set(&["interface GigabitEthernet0/0/1", "description uplink"]).unwrap();
+    assert!(output.contains("Enter system view"));
+}
+
+#[test]
+fn huawei_save_config_confirms_with_y() {
+    let mut connection = connect(
+        DeviceType::Huawei,
+        "\r\n<HUAWEI>",
+        &[
+            HUAWEI_VRP_LOGIN,
+            &[
+                (
+                    "save",
+                    "save\r\n  The current configuration will be written to the device.\r\n  Are you sure to continue?[Y/N]",
+                ),
+                ("y", "y\r\n  Now saving the current configuration to the slot 0.\r\n  Save the configuration successfully.\r\n<HUAWEI>"),
+            ],
+        ],
+    );
+    assert!(connection.save_config().unwrap().contains("Save the configuration successfully."));
+}
+
+#[test]
+fn huawei_has_no_enable_mode() {
+    let mut connection = connect(DeviceType::Huawei, "\r\n<HUAWEI>", &[HUAWEI_VRP_LOGIN]);
+    connection.enable().unwrap();
+    assert!(connection.check_enable_mode().unwrap());
+}
+
+const HUAWEI_OLT_LOGIN: &[(&str, &str)] = &[
+    ("", "\r\nMA5800-X7>"),
+    ("", "\r\nMA5800-X7>"),
+    ("enable", "enable\r\n\r\nMA5800-X7#"),
+    ("", "\r\nMA5800-X7#"),
+    ("undo smart", "undo smart\r\n\r\nMA5800-X7#"),
+    ("infoswitch cli OFF", "infoswitch cli OFF\r\n\r\nMA5800-X7#"),
+    ("scroll", "scroll\r\n\r\nMA5800-X7#"),
+];
+
+#[test]
+fn huawei_olt_enables_before_disabling_interaction_and_paging() {
+    let mut connection = connect(
+        DeviceType::HuaweiOlt,
+        "\r\nMA5800-X7>",
+        &[HUAWEI_OLT_LOGIN, &[("display board 0", "display board 0\r\n  SlotID  BoardName  Status\r\n  1       H901GPHF   Normal\r\n\r\nMA5800-X7#")]],
+    );
+    assert_eq!(
+        connection.send_command("display board 0").unwrap(),
+        "  SlotID  BoardName  Status\n  1       H901GPHF   Normal\n"
+    );
+}
+
+#[test]
+fn huawei_olt_answers_yes_no_question_at_login() {
+    connect(
+        DeviceType::HuaweiOlt,
+        "\r\nThe user has logged on another terminal. Continue? (YES/NO)[YES]:",
+        &[&[("yes", "yes\r\n\r\nMA5800-X7>")], HUAWEI_OLT_LOGIN],
+    );
+}
+
+#[test]
+fn huawei_olt_send_config_set_uses_config_and_return() {
+    let mut connection = connect(
+        DeviceType::HuaweiOlt,
+        "\r\nMA5800-X7>",
+        &[
+            HUAWEI_OLT_LOGIN,
+            &[
+                ("", "\r\nMA5800-X7#"),
+                ("config", "config\r\n\r\nMA5800-X7(config)#"),
+                ("", "\r\nMA5800-X7(config)#"),
+                ("interface gpon 0/1", "interface gpon 0/1\r\n\r\nMA5800-X7(config-if-gpon-0/1)#"),
+                ("", "\r\nMA5800-X7(config-if-gpon-0/1)#"),
+                ("return", "return\r\n\r\nMA5800-X7#"),
+                ("", "\r\nMA5800-X7#"),
+            ],
+        ],
+    );
+    connection.send_config_set(&["interface gpon 0/1"]).unwrap();
+}
