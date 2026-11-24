@@ -11,6 +11,10 @@ The API is synchronous (blocking). To work with many devices at once, run one `C
 | `CiscoIos` | `cisco_ios`, `cisco_xe` | SSH | 22 |
 | `Zte` | `zte_zxros` | SSH | 22 |
 | `ZteTelnet` | `zte_zxros_telnet` | Telnet | 23 |
+| `Huawei` | `huawei`, `huawei_vrp` | SSH | 22 |
+| `HuaweiTelnet` | `huawei_telnet` | Telnet | 23 |
+| `HuaweiOlt` | `huawei_olt`, `huawei_smartax` | SSH | 22 |
+| `HuaweiOltTelnet` | `huawei_olt_telnet` | Telnet | 23 |
 | `Junos` | `juniper_junos` | SSH | 22 |
 | `Mikrotik` | `mikrotik_routeros` | SSH | 22 |
 | `Linux` | `linux` | SSH | 22 |
@@ -60,6 +64,19 @@ fn main() -> ferromiko::Result<()> {
     let params = DeviceParams::new(DeviceType::ZteTelnet, "10.0.0.5", "admin", "password");
     let mut conn = Connection::connect(params)?; // port 23, answers Username:/Password: automatically
     println!("{}", conn.send_command("show card")?);
+    Ok(())
+}
+```
+
+### Huawei OLT (MA5600/MA5800)
+
+```rust,no_run
+use ferromiko::{Connection, DeviceParams, DeviceType};
+
+fn main() -> ferromiko::Result<()> {
+    let params = DeviceParams::new(DeviceType::HuaweiOltTelnet, "10.0.0.6", "admin", "password");
+    let mut conn = Connection::connect(params)?; // enters enable mode and disables paging on login
+    println!("{}", conn.send_command("display ont info 0 1 0 all")?);
     Ok(())
 }
 ```
@@ -120,11 +137,11 @@ For SSH, authentication tries password first, then keyboard-interactive (some Ci
 | `send_command(cmd)` | Send a command and wait for the prompt |
 | `send_command_expect(cmd, regex)` | Send a command and wait for a regex |
 | `send_command_timing(cmd, quiet)` | Send a command and read until the device is silent for `quiet` |
-| `enable()` / `check_enable_mode()` | Privileged mode; does nothing on vendors without enable |
+| `enable()` / `check_enable_mode()` | Privileged mode; does nothing on vendors without enable (Huawei VRP, Junos, MikroTik, Linux) |
 | `config_mode()` / `exit_config_mode()` / `check_config_mode()` | Configuration mode; does nothing on MikroTik and Linux |
 | `send_config_set(&[cmd])` | Enter config, send every command, exit (Junos stays in config) |
 | `commit()` | Junos only; fails with `Error::CommitFailed` unless the output says `commit complete` |
-| `save_config()` | Cisco `write memory`, ZTE `write` |
+| `save_config()` | Cisco `write memory`, ZTE `write`, Huawei `save` (answers the VRP "continue?" question with `y`) |
 | `disconnect()` | Close the session; dropping the `Connection` closes it too |
 
 `Connection::from_transport(stream, device_type, secret, timeout)` accepts any stream that implements `Read + Write` (non-blocking, returning `WouldBlock` when no data is waiting). Use it for a custom transport or in tests.
@@ -135,11 +152,15 @@ For SSH, authentication tries password first, then keyboard-interactive (some Ci
 |---|---|---|---|
 | Cisco IOS | `terminal length 0`, `terminal width 511` | `configure terminal` / `end` | `write memory` |
 | ZTE (SSH & Telnet) | `terminal length 0` | `configure terminal` / `end` | `write` |
+| Huawei VRP (SSH & Telnet) | declines the "Change now?" password prompt with `N`, then `screen-length 0 temporary` | `system-view` / `return` | `save`, confirmed with `y` |
+| Huawei OLT (SSH & Telnet) | answers a "YES/NO" login question with `yes`, then `enable`, `undo smart`, `infoswitch cli OFF`, `scroll` | `config` / `return` | `save` |
 | Junos | `cli` if the login lands in a `%` shell, then `set cli complete-on-space off`, `set cli screen-length 0`, `set cli screen-width 511` | `configure` / `exit configuration-mode` | `commit` |
 | MikroTik | username sent with the `+ct511w4098h` suffix (colors off), Enter is `\r\n` | none | none |
 | Linux | `export TERM=dumb` | none | none |
 
-Telnet uses `\r\n` as Enter, accepts server echo, and announces a 500x50 window, the same as netmiko.
+Telnet uses `\r\n` as Enter, accepts server echo, and announces a 500x50 window, the same as netmiko. Huawei VRP over Telnet ends the password with a bare `\r`, as netmiko does.
+
+Huawei VRP prompts look like `<HUAWEI>` and `[HUAWEI-GigabitEthernet0/0/1]`; VRPv8 state markers (`[~HUAWEI]`, `[*HUAWEI]`) are recognized too.
 
 ## Errors
 
@@ -164,7 +185,7 @@ The password is read from the environment, not from the arguments, so it does no
 ## Development
 
 ```sh
-cargo test             # unit tests + end-to-end Telnet test against a fake ZTE server on localhost
+cargo test             # unit tests + end-to-end Telnet tests against fake ZTE and Huawei servers on localhost
 cargo clippy --all-targets
 ```
 
@@ -187,9 +208,10 @@ src/utils/         write helpers for non-blocking sockets
 
 ## Limitations
 
-- Not yet tested against real Cisco, ZTE, Junos, or MikroTik devices. The SSH path has been tested against a Linux sshd, the Telnet path against a fake ZTE server.
+- Not yet tested against real Cisco, ZTE, Huawei, Junos, or MikroTik devices. The SSH path has been tested against a Linux sshd, the Telnet path against fake ZTE and Huawei servers.
 - SSH host keys are not verified, so connections are open to MITM. Use it on a trusted management network.
-- Telnet sends the password unencrypted, and is only available for ZTE.
+- Telnet sends the password unencrypted, and is only available for ZTE and Huawei.
+- Huawei VRPv8 (`huawei_vrpv8`, which needs `commit`), the SmartAX MMI mode (`huawei_smartaxmmi`) and Huawei ONT are not supported yet. The VRP "security risks in the configuration file" save question is not answered.
 - Legacy SSH algorithms (`diffie-hellman-group1-sha1`, `ssh-rsa`) needed by some older devices have not been verified.
 - On Linux, a prompt that shows the current directory can make commands after `cd` time out.
 - On Junos, `exit_config_mode()` answers "yes" when asked about uncommitted changes, so those changes are discarded (netmiko does the same).
