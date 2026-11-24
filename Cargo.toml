@@ -1,0 +1,13 @@
+[package]
+name = "ferromiko"
+version = "0.1.0"
+edition = "2024"
+description = "Netmiko-style SSH/Telnet CLI automation for network devices"
+license = "MIT"
+repository = "https://github.com/albantani17/ferromiko"
+readme = "README.md"
+
+[dependencies]
+regex = "1"
+ssh2 = "0.9.7"
+thiserror = "2"
