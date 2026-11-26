@@ -22,4 +22,6 @@ pub enum Error {
     UnknownDeviceType(String),
     #[error("config command `{command}` failed:\n{output}")]
     ConfigInvalid { command: String, output: String },
+    #[error("scp failed: {0}")]
+    Scp(String),
 }

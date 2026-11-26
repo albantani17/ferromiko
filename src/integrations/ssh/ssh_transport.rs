@@ -1,16 +1,13 @@
-use std::io::{self, ErrorKind, Read, Write};
-use std::sync::{Arc, mpsc};
+use std::io::{self, Read, Write};
+use std::sync::mpsc;
 use std::time::Duration;
 
-use russh::client::{self, Handle, Handler};
-use russh::keys::PublicKeyOrCertificate;
-use russh::{ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect};
-use tokio::net::TcpStream;
+use russh::client;
+use russh::{ChannelMsg, ChannelReadHalf, ChannelWriteHalf};
 use tokio::runtime::{Builder, Runtime};
 
-use super::algorithms::client_config;
-use super::authenticate::authenticate;
 use super::channel_output::ChannelOutput;
+use super::connect_session::{SshSession, connect_session, connect_tcp, disconnect, within};
 use crate::{DeviceParams, Result};
 
 const PTY_TERMINAL: &str = "vt100";
@@ -23,7 +20,7 @@ pub struct SshTransport {
     // One worker thread keeps the async russh session running between our sync calls.
     // shortcut: write/drop use `block_on`, which panics inside a tokio runtime; call from spawn_blocking there.
     runtime: Runtime,
-    session: Handle<AcceptAnyHostKey>,
+    session: SshSession,
     input: ChannelWriteHalf<client::Msg>,
     output: ChannelOutput,
 }
@@ -39,14 +36,12 @@ impl SshTransport {
     }
 }
 
-type OpenShell = (Handle<AcceptAnyHostKey>, ChannelWriteHalf<client::Msg>, ChannelReadHalf, Vec<u8>);
+type OpenShell = (SshSession, ChannelWriteHalf<client::Msg>, ChannelReadHalf, Vec<u8>);
 
 async fn open_shell(params: &DeviceParams, username: &str) -> Result<OpenShell> {
-    let tcp = within(params.timeout, TcpStream::connect((params.host.as_str(), params.port))).await??;
-    let config = client_config(params.legacy_ssh_algorithms);
+    let tcp = connect_tcp(params).await?;
     within(params.timeout, async {
-        let mut session = client::connect_stream(Arc::new(config), tcp, AcceptAnyHostKey).await?;
-        authenticate(&mut session, username, params).await?;
+        let session = connect_session(tcp, params, username).await?;
         let (mut reader, input) = session.channel_open_session().await?.split();
         let mut early_output = Vec::new();
         input.request_pty(true, PTY_TERMINAL, PTY_COLUMNS, PTY_ROWS, 0, 0, &[]).await?;
@@ -56,12 +51,6 @@ async fn open_shell(params: &DeviceParams, username: &str) -> Result<OpenShell> 
         Ok((session, input, reader, early_output))
     })
     .await?
-}
-
-async fn within<T>(limit: Duration, operation: impl Future<Output = T>) -> io::Result<T> {
-    tokio::time::timeout(limit, operation)
-        .await
-        .map_err(|_| io::Error::new(ErrorKind::TimedOut, format!("SSH setup took longer than {limit:?}")))
 }
 
 /// Waits for the server's answer to a channel request, keeping any shell output that arrives first.
@@ -91,17 +80,6 @@ async fn forward_output(mut reader: ChannelReadHalf, chunks: mpsc::Sender<Vec<u8
     }
 }
 
-struct AcceptAnyHostKey;
-
-impl Handler for AcceptAnyHostKey {
-    type Error = russh::Error;
-
-    async fn check_server_key(&mut self, _server_key: &PublicKeyOrCertificate) -> std::result::Result<bool, Self::Error> {
-        // shortcut: host key is not verified (MITM risk); add a known_hosts check before using on untrusted networks.
-        Ok(true)
-    }
-}
-
 impl Read for SshTransport {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.output.read(buf)
@@ -123,8 +101,7 @@ impl Drop for SshTransport {
     fn drop(&mut self) {
         let _ = self.runtime.block_on(within(DISCONNECT_TIMEOUT, async {
             let _ = self.input.close().await;
-            let _ = self.session.disconnect(Disconnect::ByApplication, "ferromiko disconnect", "").await;
-            let _ = (&mut self.session).await;
+            disconnect(&mut self.session).await;
         }));
     }
 }

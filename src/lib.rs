@@ -9,6 +9,7 @@ mod utils;
 
 pub use domain::device::device_type::DeviceType;
 pub use error::{Error, Result};
+pub use integrations::ssh::scp::{scp_download, scp_upload};
 pub use integrations::ssh::ssh_transport::SshTransport;
 pub use integrations::telnet::telnet_transport::TelnetTransport;
 pub use services::autodetect::autodetect::autodetect;
