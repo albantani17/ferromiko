@@ -4,6 +4,8 @@ pub mod read_until;
 pub mod telnet_login;
 
 #[cfg(test)]
+mod config_error_tests;
+#[cfg(test)]
 mod connection_tests;
 #[cfg(test)]
 mod fake_transport;

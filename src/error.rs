@@ -20,4 +20,6 @@ pub enum Error {
     CommitFailed(String),
     #[error("unknown device type: {0}")]
     UnknownDeviceType(String),
+    #[error("config command `{command}` failed:\n{output}")]
+    ConfigInvalid { command: String, output: String },
 }
