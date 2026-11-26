@@ -30,7 +30,7 @@ The crate is not on crates.io yet. Add it by path or git:
 ferromiko = { path = "../ferromiko" }
 ```
 
-OpenSSL must be installed on the system (it is used by `libssh2` through the `ssh2` crate).
+SSH uses [russh](https://crates.io/crates/russh) (pure Rust protocol, no OpenSSL). Its crypto backend `aws-lc-rs` needs a C compiler and CMake at build time.
 
 ## Quick start
 
@@ -111,9 +111,64 @@ fn main() -> ferromiko::Result<()> {
 
     // Or send and read until the device has been silent for 2 seconds.
     conn.send_command_timing("reload", Duration::from_secs(2))?;
+
+    // Several steps, each waiting for its own regex; an empty regex waits for the prompt.
+    conn.send_multiline(&[("reload", r"\[confirm\]"), ("", "")])?;
     Ok(())
 }
 ```
+
+### Stop on config errors
+
+```rust,no_run
+use ferromiko::{Connection, DeviceParams, DeviceType, Error};
+
+fn main() -> ferromiko::Result<()> {
+    let params = DeviceParams::new(DeviceType::CiscoIos, "10.0.0.1", "admin", "password");
+    let mut conn = Connection::connect(params)?;
+    match conn.send_config_set_checked(&["interface Gi0/1", "descripton typo"], r"^% Invalid") {
+        Err(Error::ConfigInvalid { command, output }) => eprintln!("{command} failed: {output}"),
+        other => println!("{}", other?),
+    }
+    Ok(())
+}
+```
+
+Like netmiko, it stops at the first failing command and leaves the session in config mode.
+
+### Detect the device type
+
+```rust,no_run
+use ferromiko::{autodetect, DeviceParams, DeviceType};
+
+fn main() -> ferromiko::Result<()> {
+    // The device type given here is ignored while detecting.
+    let mut params = DeviceParams::new(DeviceType::Linux, "10.0.0.1", "admin", "password");
+    if let Some(device_type) = autodetect(&params)? {
+        params.device_type = device_type;
+        println!("detected {device_type:?}");
+    }
+    Ok(())
+}
+```
+
+SSH only. It tries `show version`, `display version`, `uname -a` and `/system resource print`, using netmiko's patterns (the ZTE and MikroTik patterns are ferromiko's own).
+
+### Copy files with SCP
+
+```rust,no_run
+use std::path::Path;
+use ferromiko::{scp_download, scp_upload, DeviceParams, DeviceType};
+
+fn main() -> ferromiko::Result<()> {
+    let params = DeviceParams::new(DeviceType::CiscoIos, "10.0.0.1", "admin", "password");
+    scp_upload(&params, Path::new("c2900.bin"), "flash:/c2900.bin")?;
+    scp_download(&params, "flash:/config.text", Path::new("backup.cfg"))?;
+    Ok(())
+}
+```
+
+Each call opens its own SSH session. Single files only; the device must run an SCP server (Cisco: `ip scp server enable`).
 
 ## Connection options
 
@@ -125,6 +180,8 @@ fn main() -> ferromiko::Result<()> {
 | `secret` | `None` | Secret for `enable()` (Cisco/ZTE) |
 | `key_file` | `None` | SSH private key. When set, `password` is used as the key passphrase |
 | `timeout` | 10 seconds | Used for the TCP connect, the handshake, and every wait for the prompt |
+| `session_log` | `None` | File that records everything read from the device; password and secret are masked as `********`. Writes are not recorded (netmiko's default) |
+| `legacy_ssh_algorithms` | `false` | Also offer old algorithms after the modern ones: `diffie-hellman-group1/group14/group-exchange-sha1`, `ssh-dss`, `aes*-cbc`, `3des-cbc`, `hmac-sha1`. Turn it on for old routers and OLTs that reject the handshake |
 
 For SSH, authentication tries password first, then keyboard-interactive (some Cisco/ZTE images only offer the latter).
 
@@ -139,10 +196,14 @@ For SSH, authentication tries password first, then keyboard-interactive (some Ci
 | `send_command_timing(cmd, quiet)` | Send a command and read until the device is silent for `quiet` |
 | `enable()` / `check_enable_mode()` | Privileged mode; does nothing on vendors without enable (Huawei VRP, Junos, MikroTik, Linux) |
 | `config_mode()` / `exit_config_mode()` / `check_config_mode()` | Configuration mode; does nothing on MikroTik and Linux |
+| `send_multiline(&[(cmd, regex)])` | Send each command and wait for its regex (empty means the prompt) |
 | `send_config_set(&[cmd])` | Enter config, send every command, exit (Junos stays in config) |
+| `send_config_set_checked(&[cmd], error_regex)` | Same, but fails with `Error::ConfigInvalid` at the first command whose output matches `error_regex` |
 | `commit()` | Junos only; fails with `Error::CommitFailed` unless the output says `commit complete` |
 | `save_config()` | Cisco `write memory`, ZTE `write`, Huawei `save` (answers the VRP "continue?" question with `y`) |
 | `disconnect()` | Close the session; dropping the `Connection` closes it too |
+| `ferromiko::autodetect(&params)` | Log in over SSH and guess the `DeviceType` (`None` if nothing matches) |
+| `ferromiko::scp_upload(&params, local, remote)` / `scp_download(&params, remote, local)` | Copy one file over SCP |
 
 `Connection::from_transport(stream, device_type, secret, timeout)` accepts any stream that implements `Read + Write` (non-blocking, returning `WouldBlock` when no data is waiting). Use it for a custom transport or in tests.
 
@@ -171,6 +232,8 @@ Every method returns `ferromiko::Result<T>`. The `Error` variants worth handling
 - `Unsupported`: for example `save_config()` on Linux or `commit()` on Cisco.
 - `ModeChange`: could not enter or leave enable/config mode.
 - `CommitFailed`: holds the Junos commit output.
+- `ConfigInvalid { command, output }`: a command in `send_config_set_checked` matched the error pattern.
+- `Scp`: the device rejected an SCP transfer (for example "No such file or directory").
 - `Io`, `Ssh`, `Regex`, `UnknownDeviceType`.
 
 ## CLI example
@@ -200,7 +263,7 @@ Code layout:
 
 ```text
 src/domain/        pure rules: vendor profiles, prompt patterns, output cleanup
-src/integrations/  SSH transport (ssh2) and Telnet transport (TCP + IAC negotiation)
+src/integrations/  SSH transport and SCP (russh) and Telnet transport (TCP + IAC negotiation)
 src/services/      Connection, read loop, Telnet login
 src/types/         DeviceParams, Transport trait
 src/utils/         write helpers for non-blocking sockets
@@ -212,10 +275,13 @@ src/utils/         write helpers for non-blocking sockets
 - SSH host keys are not verified, so connections are open to MITM. Use it on a trusted management network.
 - Telnet sends the password unencrypted, and is only available for ZTE and Huawei.
 - Huawei VRPv8 (`huawei_vrpv8`, which needs `commit`), the SmartAX MMI mode (`huawei_smartaxmmi`) and Huawei ONT are not supported yet. The VRP "security risks in the configuration file" save question is not answered.
-- Legacy SSH algorithms (`diffie-hellman-group1-sha1`, `ssh-rsa`) needed by some older devices have not been verified.
+- `legacy_ssh_algorithms` has been verified against OpenSSH restricted to SHA-1 key exchange, `ssh-rsa`, CBC/3DES and `hmac-sha1`, not against real old devices. `ssh-dss` is offered but untested, and russh refuses Diffie-Hellman groups below 2048 bits.
+- The API is blocking and the SSH transport runs its own tokio runtime. From async code, call it inside `spawn_blocking`; calling it directly on a tokio worker panics.
+- SCP: no recursive copy, no MD5 verification, no overwrite or free-space check. A download that fails midway leaves a partial local file.
+- The session log masks a password only when it arrives in a single read; one split across two reads is written in clear.
 - On Linux, a prompt that shows the current directory can make commands after `cd` time out.
 - On Junos, `exit_config_mode()` answers "yes" when asked about uncommitted changes, so those changes are discarded (netmiko does the same).
-- Not implemented: SCP, TextFSM parsing, SSH agent or jump host, async, session logging, device type auto-detection.
+- Not implemented: TextFSM parsing, SSH agent or jump host, async API, Telnet autodetection.
 
 ## License
 
