@@ -160,6 +160,21 @@ impl<T: Read + Write> Connection<T> {
         Ok(clean_output(&raw, command, Some(&self.prompt)))
     }
 
+    /// Sends `(command, expect)` steps in order, each waiting for its regex (empty = prompt); joins the output.
+    pub fn send_multiline(&mut self, steps: &[(&str, &str)]) -> Result<String> {
+        let patterns = steps
+            .iter()
+            .map(|(_, expect)| if expect.is_empty() { Ok(self.prompt.clone()) } else { Regex::new(expect) })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut output = String::new();
+        for ((command, _), pattern) in steps.iter().zip(&patterns) {
+            let raw = self.send_and_read(command, pattern, self.read_timeout)?;
+            output.push_str(&clean_output(&raw, command, Some(&self.prompt)));
+            output.push('\n');
+        }
+        Ok(output)
+    }
+
     /// Sends a command and returns whatever arrived until the device was silent for `quiet`.
     pub fn send_command_timing(&mut self, command: &str, quiet: Duration) -> Result<String> {
         drain(&mut self.transport)?;
