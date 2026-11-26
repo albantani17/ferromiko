@@ -21,6 +21,8 @@ pub struct DeviceParams {
     pub timeout: Duration,
     /// File that records everything read from the device, with password and secret masked.
     pub session_log: Option<PathBuf>,
+    /// Also offer SHA-1 key exchange, ssh-dss, CBC/3DES ciphers and hmac-sha1, after the modern ones, for old devices.
+    pub legacy_ssh_algorithms: bool,
 }
 
 impl DeviceParams {
@@ -35,6 +37,7 @@ impl DeviceParams {
             key_file: None,
             timeout: DEFAULT_TIMEOUT,
             session_log: None,
+            legacy_ssh_algorithms: false,
         }
     }
 }

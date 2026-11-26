@@ -5,7 +5,7 @@ pub enum Error {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("ssh error: {0}")]
-    Ssh(#[from] ssh2::Error),
+    Ssh(#[from] russh::Error),
     #[error("invalid pattern: {0}")]
     Regex(#[from] regex::Error),
     #[error("authentication failed: {0}")]

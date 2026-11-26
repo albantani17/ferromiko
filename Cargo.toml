@@ -9,5 +9,6 @@ readme = "README.md"
 
 [dependencies]
 regex = "1"
-ssh2 = "0.9.7"
+russh = { version = "0.65.1", features = ["des", "dsa"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time"] }
 thiserror = "2"
