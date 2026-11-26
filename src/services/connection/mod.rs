@@ -9,6 +9,6 @@ mod config_error_tests;
 #[cfg(test)]
 mod connection_tests;
 #[cfg(test)]
-mod fake_transport;
+pub(crate) mod fake_transport;
 #[cfg(test)]
 mod send_multiline_tests;
