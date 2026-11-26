@@ -164,9 +164,12 @@ impl<T: Read + Write> Connection<T> {
         &mut self,
         command: &str,
         templates_dir: &std::path::Path,
-    ) -> Result<Option<Vec<crate::TextFsmRecord>>> {
+    ) -> Result<crate::TextFsmOutput> {
         let output = self.send_command(command)?;
-        crate::parse_ntc(templates_dir, self.device_type, command, &output)
+        Ok(match crate::parse_ntc(templates_dir, self.device_type, command, &output)? {
+            Some(records) if !records.is_empty() => crate::TextFsmOutput::Parsed(records),
+            _ => crate::TextFsmOutput::Raw(output),
+        })
     }
 
     /// Sends a command and waits for `pattern` (a regex) instead of the prompt.

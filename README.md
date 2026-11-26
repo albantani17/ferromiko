@@ -183,15 +183,15 @@ ferromiko = { path = "../ferromiko", features = ["textfsm"] }
 # fn main() {}
 #[cfg(feature = "textfsm")]
 fn main() -> ferromiko::Result<()> {
-    use ferromiko::{ntc_templates_dir, Connection, DeviceParams, DeviceType};
+    use ferromiko::{ntc_templates_dir, Connection, DeviceParams, DeviceType, TextFsmOutput};
 
     let params = DeviceParams::new(DeviceType::CiscoIos, "10.0.0.1", "admin", "password");
     let mut conn = Connection::connect(params)?;
     // NET_TEXTFSM=~/ntc-templates/ntc_templates/templates, as for netmiko.
     let templates = ntc_templates_dir().expect("NET_TEXTFSM is not set");
     match conn.send_command_textfsm("show ip interface brief", &templates)? {
-        Some(rows) => rows.iter().for_each(|row| println!("{:?}", row["interface"])),
-        None => println!("no template for this command"),
+        TextFsmOutput::Parsed(rows) => rows.iter().for_each(|row| println!("{:?}", row["interface"])),
+        TextFsmOutput::Raw(text) => println!("{text}"), // no template, or it found no rows
     }
     Ok(())
 }
@@ -233,7 +233,7 @@ For SSH, authentication tries password first, then keyboard-interactive (some Ci
 | `disconnect()` | Close the session; dropping the `Connection` closes it too |
 | `ferromiko::autodetect(&params)` | Log in over SSH and guess the `DeviceType` (`None` if nothing matches) |
 | `ferromiko::scp_upload(&params, local, remote)` / `scp_download(&params, remote, local)` | Copy one file over SCP |
-| `send_command_textfsm(cmd, templates_dir)` | `textfsm` feature: send a command and parse it with the matching ntc-templates template (`None` if there is none) |
+| `send_command_textfsm(cmd, templates_dir)` | `textfsm` feature: send a command and parse it with the matching ntc-templates template; `TextFsmOutput::Raw` with the text when there is none or it found no rows (as netmiko) |
 | `ferromiko::parse_ntc(dir, device_type, cmd, output)` / `parse_textfsm(template, output)` | `textfsm` feature: parse output via the index, or with one template file |
 | `ferromiko::ntc_templates_dir()` | `textfsm` feature: the templates directory from `NET_TEXTFSM` |
 
@@ -315,7 +315,7 @@ src/utils/         write helpers for non-blocking sockets
 - The session log masks a password only when it arrives in a single read; one split across two reads is written in clear.
 - On Linux, a prompt that shows the current directory can make commands after `cd` time out.
 - On Junos, `exit_config_mode()` answers "yes" when asked about uncommitted changes, so those changes are discarded (netmiko does the same).
-- TextFSM uses the [textfsm-core](https://crates.io/crates/textfsm-core) port, which matches 661 of the 665 ntc-templates fixtures for the supported platforms. It differs from Python on `huawei_vrp` `display vlan` and on MikroTik `ping` (Python fills unmatched `List` entries with `None`). Unlike netmiko, a template that matches no rows returns `Some(vec![])` rather than the raw text. The `index` is read once per directory per process (as in Python), and parsed templates are kept too, so an edited template is only picked up after a restart.
+- TextFSM uses the [textfsm-core](https://crates.io/crates/textfsm-core) port, which matches 661 of the 665 ntc-templates fixtures for the supported platforms. It differs from Python on `huawei_vrp` `display vlan` and on MikroTik `ping` (Python fills unmatched `List` entries with `None`). `parse_ntc` returns `None` when no template matches and `Some(vec![])` when the template finds no rows; only `send_command_textfsm` falls back to the raw text. The `index` is read once per directory per process (as in Python), and parsed templates are kept too, so an edited template is only picked up after a restart.
 - Not implemented: SSH agent or jump host, async API, Telnet autodetection.
 
 ## License

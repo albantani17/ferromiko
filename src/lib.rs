@@ -20,5 +20,5 @@ pub use services::autodetect::autodetect::autodetect;
 pub use services::connection::connection::Connection;
 pub use types::device_params::DeviceParams;
 #[cfg(feature = "textfsm")]
-pub use types::textfsm_record::{FieldValue, TextFsmRecord};
+pub use types::textfsm_record::{FieldValue, TextFsmOutput, TextFsmRecord};
 pub use types::transport::Transport;
