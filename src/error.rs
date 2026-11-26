@@ -24,4 +24,6 @@ pub enum Error {
     ConfigInvalid { command: String, output: String },
     #[error("scp failed: {0}")]
     Scp(String),
+    #[error("textfsm failed: {0}")]
+    TextFsm(String),
 }

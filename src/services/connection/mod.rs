@@ -12,3 +12,5 @@ mod connection_tests;
 pub(crate) mod fake_transport;
 #[cfg(test)]
 mod send_multiline_tests;
+#[cfg(all(test, feature = "textfsm"))]
+mod textfsm_tests;

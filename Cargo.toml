@@ -12,3 +12,8 @@ regex = "1"
 russh = { version = "0.65.1", features = ["des", "dsa"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time"] }
 thiserror = "2"
+textfsm-core = { version = "0.3.1", optional = true }
+
+[features]
+# Parse command output with TextFSM templates (netmiko's `use_textfsm`).
+textfsm = ["dep:textfsm-core"]

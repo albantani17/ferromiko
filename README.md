@@ -170,6 +170,35 @@ fn main() -> ferromiko::Result<()> {
 
 Each call opens its own SSH session. Single files only; the device must run an SCP server (Cisco: `ip scp server enable`).
 
+### Parse output with TextFSM
+
+Enable the optional `textfsm` feature to get netmiko's `use_textfsm`: the output is parsed with an [ntc-templates](https://github.com/networktocode/ntc-templates) template picked from its `index` by device type and command (abbreviations such as `sh ip int br` work too).
+
+```toml
+ferromiko = { path = "../ferromiko", features = ["textfsm"] }
+```
+
+```rust,no_run
+# #[cfg(not(feature = "textfsm"))]
+# fn main() {}
+#[cfg(feature = "textfsm")]
+fn main() -> ferromiko::Result<()> {
+    use ferromiko::{ntc_templates_dir, Connection, DeviceParams, DeviceType};
+
+    let params = DeviceParams::new(DeviceType::CiscoIos, "10.0.0.1", "admin", "password");
+    let mut conn = Connection::connect(params)?;
+    // NET_TEXTFSM=~/ntc-templates/ntc_templates/templates, as for netmiko.
+    let templates = ntc_templates_dir().expect("NET_TEXTFSM is not set");
+    match conn.send_command_textfsm("show ip interface brief", &templates)? {
+        Some(rows) => rows.iter().for_each(|row| println!("{:?}", row["interface"])),
+        None => println!("no template for this command"),
+    }
+    Ok(())
+}
+```
+
+Each row is a `BTreeMap` from the lowercase value name to `FieldValue::Text` or, for `List` values, `FieldValue::List`. Templates are not bundled: clone ntc-templates and point `NET_TEXTFSM` (or any path) at its `templates` directory. Telnet device types use the same templates as SSH. `ferromiko::parse_textfsm(template_file, output)` parses with one template file, and `ferromiko::parse_ntc(dir, device_type, command, output)` does the index lookup on output you already have.
+
 ## Connection options
 
 `DeviceParams::new(device_type, host, username, password)` fills in the defaults. Every field is public and can be changed:
@@ -204,6 +233,9 @@ For SSH, authentication tries password first, then keyboard-interactive (some Ci
 | `disconnect()` | Close the session; dropping the `Connection` closes it too |
 | `ferromiko::autodetect(&params)` | Log in over SSH and guess the `DeviceType` (`None` if nothing matches) |
 | `ferromiko::scp_upload(&params, local, remote)` / `scp_download(&params, remote, local)` | Copy one file over SCP |
+| `send_command_textfsm(cmd, templates_dir)` | `textfsm` feature: send a command and parse it with the matching ntc-templates template (`None` if there is none) |
+| `ferromiko::parse_ntc(dir, device_type, cmd, output)` / `parse_textfsm(template, output)` | `textfsm` feature: parse output via the index, or with one template file |
+| `ferromiko::ntc_templates_dir()` | `textfsm` feature: the templates directory from `NET_TEXTFSM` |
 
 `Connection::from_transport(stream, device_type, secret, timeout)` accepts any stream that implements `Read + Write` (non-blocking, returning `WouldBlock` when no data is waiting). Use it for a custom transport or in tests.
 
@@ -234,6 +266,7 @@ Every method returns `ferromiko::Result<T>`. The `Error` variants worth handling
 - `CommitFailed`: holds the Junos commit output.
 - `ConfigInvalid { command, output }`: a command in `send_config_set_checked` matched the error pattern.
 - `Scp`: the device rejected an SCP transfer (for example "No such file or directory").
+- `TextFsm`: a TextFSM template or `index` is invalid or missing, or a template reached an `Error` action.
 - `Io`, `Ssh`, `Regex`, `UnknownDeviceType`.
 
 ## CLI example
@@ -249,7 +282,8 @@ The password is read from the environment, not from the arguments, so it does no
 
 ```sh
 cargo test             # unit tests + end-to-end Telnet tests against fake ZTE and Huawei servers on localhost
-cargo clippy --all-targets
+cargo test --features textfsm
+cargo clippy --all-targets --all-features
 ```
 
 The test against a real SSH server is ignored by default:
@@ -262,8 +296,8 @@ FERROMIKO_HOST=127.0.0.1 FERROMIKO_USER=$USER FERROMIKO_KEY=~/.ssh/id_ed25519 \
 Code layout:
 
 ```text
-src/domain/        pure rules: vendor profiles, prompt patterns, output cleanup
-src/integrations/  SSH transport and SCP (russh) and Telnet transport (TCP + IAC negotiation)
+src/domain/        pure rules: vendor profiles, prompt patterns, output cleanup, ntc platform names
+src/integrations/  SSH transport and SCP (russh), Telnet transport (TCP + IAC negotiation), TextFSM (textfsm-core)
 src/services/      Connection, read loop, Telnet login
 src/types/         DeviceParams, Transport trait
 src/utils/         write helpers for non-blocking sockets
@@ -281,7 +315,8 @@ src/utils/         write helpers for non-blocking sockets
 - The session log masks a password only when it arrives in a single read; one split across two reads is written in clear.
 - On Linux, a prompt that shows the current directory can make commands after `cd` time out.
 - On Junos, `exit_config_mode()` answers "yes" when asked about uncommitted changes, so those changes are discarded (netmiko does the same).
-- Not implemented: TextFSM parsing, SSH agent or jump host, async API, Telnet autodetection.
+- TextFSM uses the [textfsm-core](https://crates.io/crates/textfsm-core) port, which matches 661 of the 665 ntc-templates fixtures for the supported platforms. It differs from Python on `huawei_vrp` `display vlan` and on MikroTik `ping` (Python fills unmatched `List` entries with `None`). Unlike netmiko, a template that matches no rows returns `Some(vec![])` rather than the raw text. The `index` is read once per directory per process (as in Python), and parsed templates are kept too, so an edited template is only picked up after a restart.
+- Not implemented: SSH agent or jump host, async API, Telnet autodetection.
 
 ## License
 

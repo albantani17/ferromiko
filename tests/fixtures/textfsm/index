@@ -1,0 +1,8 @@
+# Copied from https://github.com/networktocode/ntc-templates
+# (commit 06fa33389fbcca31cd59aac5fd5cb2ce5c900939), Apache-2.0, see LICENSE-ntc-templates.
+# cisco_ios_show_clock.textfsm and cisco_ios_show_clock.raw are unmodified;
+# this index keeps only the header and the show clock row.
+#
+Template, Hostname, Platform, Command
+
+cisco_ios_show_clock.textfsm, .*, cisco_ios, sh[[ow]] clo[[ck]]

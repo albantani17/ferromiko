@@ -35,6 +35,8 @@ pub struct Connection<T: Read + Write = Box<dyn Transport>> {
     any_prompt: Regex,
     secret: Option<String>,
     read_timeout: Duration,
+    #[cfg(feature = "textfsm")]
+    device_type: DeviceType,
 }
 
 impl Connection<Box<dyn Transport>> {
@@ -94,6 +96,8 @@ impl<T: Read + Write> Connection<T> {
             any_prompt,
             secret,
             read_timeout,
+            #[cfg(feature = "textfsm")]
+            device_type,
         };
         connection.prepare_session(login_output)?;
         Ok(connection)
@@ -151,6 +155,18 @@ impl<T: Read + Write> Connection<T> {
         let prompt = self.prompt.clone();
         let raw = self.send_and_read(command, &prompt, self.read_timeout)?;
         Ok(clean_output(&raw, command, Some(&prompt)))
+    }
+
+    /// Sends a command and parses its output with the matching template from an ntc-templates
+    /// directory (netmiko's `use_textfsm`). `None` when no template matches the command.
+    #[cfg(feature = "textfsm")]
+    pub fn send_command_textfsm(
+        &mut self,
+        command: &str,
+        templates_dir: &std::path::Path,
+    ) -> Result<Option<Vec<crate::TextFsmRecord>>> {
+        let output = self.send_command(command)?;
+        crate::parse_ntc(templates_dir, self.device_type, command, &output)
     }
 
     /// Sends a command and waits for `pattern` (a regex) instead of the prompt.
