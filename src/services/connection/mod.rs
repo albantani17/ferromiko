@@ -7,3 +7,5 @@ pub mod telnet_login;
 mod connection_tests;
 #[cfg(test)]
 mod fake_transport;
+#[cfg(test)]
+mod send_multiline_tests;
