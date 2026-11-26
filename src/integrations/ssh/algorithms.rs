@@ -2,11 +2,9 @@ use russh::client::{Config, GexParams};
 use russh::keys::Algorithm;
 use russh::{Preferred, cipher, kex, mac};
 
-// ECDH is not legacy, but russh leaves it out of its defaults and some IOS/VRP images offer nothing newer.
+// Not legacy, but russh leaves ECDH out of its defaults (libssh2 offered it) and some IOS/VRP images offer nothing newer.
+const ECDH_KEX: &[kex::Name] = &[kex::ECDH_SHA2_NISTP256, kex::ECDH_SHA2_NISTP384, kex::ECDH_SHA2_NISTP521];
 const LEGACY_KEX: &[kex::Name] = &[
-    kex::ECDH_SHA2_NISTP256,
-    kex::ECDH_SHA2_NISTP384,
-    kex::ECDH_SHA2_NISTP521,
     kex::DH_G14_SHA1,
     kex::DH_GEX_SHA1,
     kex::DH_G1_SHA1,
@@ -28,9 +26,10 @@ pub fn client_config(include_legacy: bool) -> Config {
     config
 }
 
-/// russh's modern defaults, followed by legacy algorithms when `include_legacy` is set.
+/// russh's modern defaults plus ECDH, followed by legacy algorithms when `include_legacy` is set.
 fn preferred_algorithms(include_legacy: bool) -> Preferred {
-    let modern = Preferred::default();
+    let defaults = Preferred::default();
+    let modern = Preferred { kex: [&defaults.kex[..], ECDH_KEX].concat().into(), ..defaults };
     if !include_legacy {
         return modern;
     }
@@ -53,15 +52,17 @@ mod tests {
     }
 
     #[test]
-    fn keeps_russh_defaults_when_legacy_is_off() {
+    fn keeps_russh_defaults_plus_ecdh_when_legacy_is_off() {
         let preferred = preferred_algorithms(false);
-        assert_eq!(names(&preferred.kex), names(&Preferred::default().kex));
+        let defaults = Preferred::default();
+        assert_eq!(names(&preferred.kex[..defaults.kex.len()]), names(&defaults.kex));
+        assert_eq!(names(&preferred.kex[defaults.kex.len()..]), names(ECDH_KEX));
         assert!(!names(&preferred.cipher).contains(&"3des-cbc"));
     }
 
     #[test]
     fn appends_legacy_algorithms_after_modern_defaults() {
-        let modern = Preferred::default();
+        let modern = preferred_algorithms(false);
         let preferred = preferred_algorithms(true);
         assert_eq!(names(&preferred.kex[..modern.kex.len()]), names(&modern.kex));
         assert_eq!(names(&preferred.kex[modern.kex.len()..]), names(LEGACY_KEX));
