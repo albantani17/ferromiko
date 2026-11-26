@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 
 use super::read_until::{drain, read_until, read_until_quiet};
 use super::telnet_login::telnet_login;
@@ -217,9 +217,25 @@ impl<T: Read + Write> Connection<T> {
     /// Enters config mode, sends each command, then exits.
     /// Vendors with a commit step (Junos) stay in config mode so `commit()` can follow.
     pub fn send_config_set(&mut self, commands: &[&str]) -> Result<String> {
+        self.send_config_commands(commands, None)
+    }
+
+    /// Like `send_config_set`, but stops at the first command whose output matches
+    /// `error_pattern` (multi-line regex, as netmiko's `error_pattern`) and returns
+    /// `Error::ConfigInvalid`. Like netmiko, the session is left in config mode on error.
+    pub fn send_config_set_checked(&mut self, commands: &[&str], error_pattern: &str) -> Result<String> {
+        let error_regex = RegexBuilder::new(error_pattern).multi_line(true).build()?;
+        self.send_config_commands(commands, Some(&error_regex))
+    }
+
+    fn send_config_commands(&mut self, commands: &[&str], error_regex: Option<&Regex>) -> Result<String> {
         let mut output = self.config_mode()?;
         for command in commands {
-            output.push_str(&self.send_command(command)?);
+            let command_output = self.send_command(command)?;
+            if error_regex.is_some_and(|regex| regex.is_match(&command_output)) {
+                return Err(Error::ConfigInvalid { command: command.to_string(), output: command_output });
+            }
+            output.push_str(&command_output);
             output.push('\n');
         }
         if self.profile.commit_command.is_none() {
