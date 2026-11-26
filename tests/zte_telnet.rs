@@ -117,3 +117,24 @@ fn reports_wrong_password_as_auth_error() {
     assert!(matches!(result, Err(Error::Auth(_))));
     server.join().unwrap();
 }
+
+#[test]
+fn session_log_records_telnet_login_with_password_masked() {
+    let (port, server) = spawn_fake_zte("zte123", |device| {
+        device.send(b"zte123\r\nZXAN#");
+        device.expect("", "\r\nZXAN#");
+        device.expect("terminal length 0", "terminal length 0\r\nZXAN#");
+    });
+    let log_path = std::env::temp_dir().join(format!("ferromiko-telnet-session-{}.log", std::process::id()));
+    let mut device = params(port, "zte123");
+    device.session_log = Some(log_path.clone());
+
+    Connection::connect(device).unwrap().disconnect();
+    server.join().unwrap();
+
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    std::fs::remove_file(&log_path).unwrap();
+    assert!(log.contains("Username:"), "{log:?}");
+    assert!(log.contains("********\r\nZXAN#"), "{log:?}");
+    assert!(!log.contains("zte123"), "{log:?}");
+}
