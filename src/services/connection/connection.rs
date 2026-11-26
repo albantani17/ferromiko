@@ -5,6 +5,7 @@ use std::time::Duration;
 use regex::{Regex, RegexBuilder};
 
 use super::read_until::{drain, read_until, read_until_quiet};
+use super::session_log::SessionLog;
 use super::telnet_login::telnet_login;
 use crate::domain::device::login_question::{answer_login_question, prompt_or_question_pattern};
 use crate::domain::device::profile::{Profile, Protocol};
@@ -43,18 +44,26 @@ impl Connection<Box<dyn Transport>> {
         let profile = params.device_type.profile();
         match profile.protocol {
             Protocol::Ssh => {
-                let transport = SshTransport::open(&params, profile.username_suffix)?;
-                Connection::start(Box::new(transport), params.device_type, params.secret, params.timeout, None)
+                let transport = with_session_log(SshTransport::open(&params, profile.username_suffix)?, &params)?;
+                Connection::start(transport, params.device_type, params.secret, params.timeout, None)
             }
             Protocol::Telnet => {
-                let mut transport = TelnetTransport::open(&params.host, params.port, params.timeout)?;
+                let telnet = TelnetTransport::open(&params.host, params.port, params.timeout)?;
+                let mut transport = with_session_log(telnet, &params)?;
                 let login_output =
                     telnet_login(&mut transport, &params.username, &params.password, &profile, params.timeout)?;
-                let transport: Box<dyn Transport> = Box::new(transport);
                 Connection::start(transport, params.device_type, params.secret, params.timeout, Some(login_output))
             }
         }
     }
+}
+
+fn with_session_log(transport: impl Transport + 'static, params: &DeviceParams) -> Result<Box<dyn Transport>> {
+    let Some(path) = &params.session_log else {
+        return Ok(Box::new(transport));
+    };
+    let secrets = [params.password.as_str(), params.secret.as_deref().unwrap_or_default()];
+    Ok(Box::new(SessionLog::create(transport, path, &secrets)?))
 }
 
 impl<T: Read + Write> Connection<T> {

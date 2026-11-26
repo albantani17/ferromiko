@@ -1,6 +1,7 @@
 #[allow(clippy::module_inception)]
 pub mod connection;
 pub mod read_until;
+pub mod session_log;
 pub mod telnet_login;
 
 #[cfg(test)]

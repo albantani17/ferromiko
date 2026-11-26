@@ -19,6 +19,8 @@ pub struct DeviceParams {
     pub key_file: Option<PathBuf>,
     /// Used for TCP connect, SSH handshake and each wait for the device prompt.
     pub timeout: Duration,
+    /// File that records everything read from the device, with password and secret masked.
+    pub session_log: Option<PathBuf>,
 }
 
 impl DeviceParams {
@@ -32,6 +34,7 @@ impl DeviceParams {
             secret: None,
             key_file: None,
             timeout: DEFAULT_TIMEOUT,
+            session_log: None,
         }
     }
 }
