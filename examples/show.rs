@@ -1,5 +1,6 @@
 //! Usage: FERROMIKO_PASS=... [FERROMIKO_SECRET=...] cargo run --example show -- <device_type> <host> <username> "<command>"
-//! device_type: cisco_ios | zte_zxros | zte_zxros_telnet | juniper_junos | mikrotik_routeros | linux
+//! device_type: cisco_ios | zte_zxros | zte_zxros_telnet | huawei | huawei_telnet | huawei_olt | huawei_olt_telnet
+//!              | juniper_junos | mikrotik_routeros | linux
 
 use std::env;
 

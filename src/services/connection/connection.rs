@@ -2,10 +2,12 @@ use std::io::{Read, Write};
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 
 use super::read_until::{drain, read_until, read_until_quiet};
+use super::session_log::SessionLog;
 use super::telnet_login::telnet_login;
+use crate::domain::device::login_question::{answer_login_question, prompt_or_question_pattern};
 use crate::domain::device::profile::{Profile, Protocol};
 use crate::domain::output::clean_output::clean_output;
 use crate::domain::prompt::base_prompt::base_prompt;
@@ -14,6 +16,7 @@ use crate::domain::prompt::prompt_pattern::{any_prompt_pattern, prompt_pattern};
 use crate::{DeviceParams, DeviceType, Error, Result, SshTransport, TelnetTransport, Transport};
 
 const LOGIN_QUIET: Duration = Duration::from_millis(300);
+const MAX_LOGIN_QUESTIONS: usize = 3;
 const SAVE_TIMEOUT: Duration = Duration::from_secs(120);
 const COMMIT_TIMEOUT: Duration = Duration::from_secs(120);
 const ENABLE_PROMPT_TERMINATOR: char = '#';
@@ -29,8 +32,11 @@ pub struct Connection<T: Read + Write = Box<dyn Transport>> {
     transport: T,
     profile: Profile,
     prompt: Regex,
+    any_prompt: Regex,
     secret: Option<String>,
     read_timeout: Duration,
+    #[cfg(feature = "textfsm")]
+    device_type: DeviceType,
 }
 
 impl Connection<Box<dyn Transport>> {
@@ -40,16 +46,26 @@ impl Connection<Box<dyn Transport>> {
         let profile = params.device_type.profile();
         match profile.protocol {
             Protocol::Ssh => {
-                let transport = SshTransport::open(&params, profile.username_suffix)?;
-                Connection::start(Box::new(transport), params.device_type, params.secret, params.timeout, false)
+                let transport = with_session_log(SshTransport::open(&params, profile.username_suffix)?, &params)?;
+                Connection::start(transport, params.device_type, params.secret, params.timeout, None)
             }
             Protocol::Telnet => {
-                let mut transport = TelnetTransport::open(&params.host, params.port, params.timeout)?;
-                telnet_login(&mut transport, &params.username, &params.password, profile.enter, params.timeout)?;
-                Connection::start(Box::new(transport), params.device_type, params.secret, params.timeout, true)
+                let telnet = TelnetTransport::open(&params.host, params.port, params.timeout)?;
+                let mut transport = with_session_log(telnet, &params)?;
+                let login_output =
+                    telnet_login(&mut transport, &params.username, &params.password, &profile, params.timeout)?;
+                Connection::start(transport, params.device_type, params.secret, params.timeout, Some(login_output))
             }
         }
     }
+}
+
+fn with_session_log(transport: impl Transport + 'static, params: &DeviceParams) -> Result<Box<dyn Transport>> {
+    let Some(path) = &params.session_log else {
+        return Ok(Box::new(transport));
+    };
+    let secrets = [params.password.as_str(), params.secret.as_deref().unwrap_or_default()];
+    Ok(Box::new(SessionLog::create(transport, path, &secrets)?))
 }
 
 impl<T: Read + Write> Connection<T> {
@@ -60,34 +76,49 @@ impl<T: Read + Write> Connection<T> {
         secret: Option<String>,
         read_timeout: Duration,
     ) -> Result<Self> {
-        Self::start(transport, device_type, secret, read_timeout, false)
+        Self::start(transport, device_type, secret, read_timeout, None)
     }
 
+    /// `login_output` is what a Telnet login already read; `None` reads the banner here.
     fn start(
         transport: T,
         device_type: DeviceType,
         secret: Option<String>,
         read_timeout: Duration,
-        prompt_already_seen: bool,
+        login_output: Option<String>,
     ) -> Result<Self> {
+        let profile = device_type.profile();
+        let any_prompt = any_prompt_pattern(profile.prompt_terminators);
         let mut connection = Self {
             transport,
-            profile: device_type.profile(),
-            prompt: any_prompt_pattern().clone(),
+            profile,
+            prompt: any_prompt.clone(),
+            any_prompt,
             secret,
             read_timeout,
+            #[cfg(feature = "textfsm")]
+            device_type,
         };
-        connection.prepare_session(prompt_already_seen)?;
+        connection.prepare_session(login_output)?;
         Ok(connection)
     }
 
-    fn prepare_session(&mut self, prompt_already_seen: bool) -> Result<()> {
-        // Login banners are optional; a device that stays silent until Enter is fine.
-        if !prompt_already_seen {
-            match read_until(&mut self.transport, any_prompt_pattern(), self.read_timeout) {
-                Ok(_) | Err(Error::Timeout { .. }) => {}
+    fn prepare_session(&mut self, login_output: Option<String>) -> Result<()> {
+        let prompt_or_question = prompt_or_question_pattern(&self.any_prompt, self.profile.login_questions)?;
+        let mut output = match login_output {
+            Some(output) => output,
+            // Login banners are optional; a device that stays silent until Enter is fine.
+            None => match read_until(&mut self.transport, &prompt_or_question, self.read_timeout) {
+                Ok(output) | Err(Error::Timeout { output, .. }) => output,
                 Err(error) => return Err(error),
-            }
+            },
+        };
+        for _ in 0..MAX_LOGIN_QUESTIONS {
+            let Some(answer) = answer_login_question(self.profile.login_questions, &output)? else {
+                break;
+            };
+            self.write_line(answer)?;
+            output = read_until(&mut self.transport, &prompt_or_question, self.read_timeout)?;
         }
         // A banner line like "#####" also looks like a prompt; wait for silence so the real
         // prompt is consumed here and not mistaken for the reply to a later command.
@@ -97,10 +128,13 @@ impl<T: Read + Write> Connection<T> {
             && prompt.ends_with(SHELL_PROMPT_TERMINATOR)
         {
             self.write_line(cli_command)?;
-            read_until(&mut self.transport, any_prompt_pattern(), self.read_timeout)?;
+            read_until(&mut self.transport, &self.any_prompt, self.read_timeout)?;
             prompt = self.find_prompt()?;
         }
-        self.prompt = prompt_pattern(&base_prompt(&prompt));
+        self.prompt = prompt_pattern(&base_prompt(&prompt), self.profile.prompt_terminators);
+        if self.profile.enable_on_login {
+            self.enable()?;
+        }
         for command in self.profile.paging_commands {
             self.send_command(command)?;
         }
@@ -111,7 +145,7 @@ impl<T: Read + Write> Connection<T> {
     pub fn find_prompt(&mut self) -> Result<String> {
         drain(&mut self.transport)?;
         self.write_line("")?;
-        let output = read_until(&mut self.transport, any_prompt_pattern(), self.read_timeout)?;
+        let output = read_until(&mut self.transport, &self.any_prompt, self.read_timeout)?;
         let prompt = output.lines().rev().map(str::trim).find(|line| !line.is_empty());
         Ok(prompt.unwrap_or_default().to_string())
     }
@@ -123,11 +157,41 @@ impl<T: Read + Write> Connection<T> {
         Ok(clean_output(&raw, command, Some(&prompt)))
     }
 
+    /// Sends a command and parses its output with the matching template from an ntc-templates
+    /// directory (netmiko's `use_textfsm`). `None` when no template matches the command.
+    #[cfg(feature = "textfsm")]
+    pub fn send_command_textfsm(
+        &mut self,
+        command: &str,
+        templates_dir: &std::path::Path,
+    ) -> Result<crate::TextFsmOutput> {
+        let output = self.send_command(command)?;
+        Ok(match crate::parse_ntc(templates_dir, self.device_type, command, &output)? {
+            Some(records) if !records.is_empty() => crate::TextFsmOutput::Parsed(records),
+            _ => crate::TextFsmOutput::Raw(output),
+        })
+    }
+
     /// Sends a command and waits for `pattern` (a regex) instead of the prompt.
     pub fn send_command_expect(&mut self, command: &str, pattern: &str) -> Result<String> {
         let expected = Regex::new(pattern)?;
         let raw = self.send_and_read(command, &expected, self.read_timeout)?;
         Ok(clean_output(&raw, command, Some(&self.prompt)))
+    }
+
+    /// Sends `(command, expect)` steps in order, each waiting for its regex (empty = prompt); joins the output.
+    pub fn send_multiline(&mut self, steps: &[(&str, &str)]) -> Result<String> {
+        let patterns = steps
+            .iter()
+            .map(|(_, expect)| if expect.is_empty() { Ok(self.prompt.clone()) } else { Regex::new(expect) })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut output = String::new();
+        for ((command, _), pattern) in steps.iter().zip(&patterns) {
+            let raw = self.send_and_read(command, pattern, self.read_timeout)?;
+            output.push_str(&clean_output(&raw, command, Some(&self.prompt)));
+            output.push('\n');
+        }
+        Ok(output)
     }
 
     /// Sends a command and returns whatever arrived until the device was silent for `quiet`.
@@ -217,9 +281,25 @@ impl<T: Read + Write> Connection<T> {
     /// Enters config mode, sends each command, then exits.
     /// Vendors with a commit step (Junos) stay in config mode so `commit()` can follow.
     pub fn send_config_set(&mut self, commands: &[&str]) -> Result<String> {
+        self.send_config_commands(commands, None)
+    }
+
+    /// Like `send_config_set`, but stops at the first command whose output matches
+    /// `error_pattern` (multi-line regex, as netmiko's `error_pattern`) and returns
+    /// `Error::ConfigInvalid`. Like netmiko, the session is left in config mode on error.
+    pub fn send_config_set_checked(&mut self, commands: &[&str], error_pattern: &str) -> Result<String> {
+        let error_regex = RegexBuilder::new(error_pattern).multi_line(true).build()?;
+        self.send_config_commands(commands, Some(&error_regex))
+    }
+
+    fn send_config_commands(&mut self, commands: &[&str], error_regex: Option<&Regex>) -> Result<String> {
         let mut output = self.config_mode()?;
         for command in commands {
-            output.push_str(&self.send_command(command)?);
+            let command_output = self.send_command(command)?;
+            if error_regex.is_some_and(|regex| regex.is_match(&command_output)) {
+                return Err(Error::ConfigInvalid { command: command.to_string(), output: command_output });
+            }
+            output.push_str(&command_output);
             output.push('\n');
         }
         if self.profile.commit_command.is_none() {
@@ -243,11 +323,22 @@ impl<T: Read + Write> Connection<T> {
         Ok(output)
     }
 
-    /// Saves the running configuration (Cisco `write memory`, ZTE `write`).
+    /// Saves the configuration (Cisco `write memory`, ZTE `write`, Huawei `save`),
+    /// answering the vendor's confirmation question when it asks one.
     pub fn save_config(&mut self) -> Result<String> {
         let save_command = self.profile.save_command.ok_or(Error::Unsupported("save_config"))?;
         let prompt = self.prompt.clone();
-        let raw = self.send_and_read(save_command, &prompt, SAVE_TIMEOUT)?;
+        let Some((question, answer)) = self.profile.save_confirmation else {
+            let raw = self.send_and_read(save_command, &prompt, SAVE_TIMEOUT)?;
+            return Ok(clean_output(&raw, save_command, Some(&prompt)));
+        };
+        let question = Regex::new(question)?;
+        let prompt_or_question = Regex::new(&format!("(?:{})|(?:{})", question.as_str(), prompt.as_str()))?;
+        let mut raw = self.send_and_read(save_command, &prompt_or_question, SAVE_TIMEOUT)?;
+        if question.is_match(&raw) {
+            self.write_line(answer)?;
+            raw.push_str(&read_until(&mut self.transport, &prompt, SAVE_TIMEOUT)?);
+        }
         Ok(clean_output(&raw, save_command, Some(&prompt)))
     }
 

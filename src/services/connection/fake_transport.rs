@@ -34,8 +34,11 @@ impl Read for FakeTransport {
 impl Write for FakeTransport {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.partial_line.push_str(&String::from_utf8_lossy(buf));
-        while let Some(newline) = self.partial_line.find('\n') {
-            let line: String = self.partial_line.drain(..=newline).collect();
+        // A line ends at CR, LF or CRLF (Huawei sends a bare CR after the Telnet password).
+        while let Some(line_end) = self.partial_line.find(['\r', '\n']) {
+            let ends_with_crlf = self.partial_line[line_end..].starts_with("\r\n");
+            let consumed = line_end + if ends_with_crlf { 2 } else { 1 };
+            let line: String = self.partial_line.drain(..consumed).collect();
             let line = line.trim_end_matches(['\r', '\n']);
             let (expected, reply) = self.script.pop_front().unwrap_or_else(|| panic!("unexpected command {line:?}"));
             assert_eq!(line, expected, "device received the wrong command");

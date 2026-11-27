@@ -19,6 +19,10 @@ pub struct DeviceParams {
     pub key_file: Option<PathBuf>,
     /// Used for TCP connect, SSH handshake and each wait for the device prompt.
     pub timeout: Duration,
+    /// File that records everything read from the device, with password and secret masked.
+    pub session_log: Option<PathBuf>,
+    /// Also offer SHA-1 key exchange, ssh-dss, CBC/3DES ciphers and hmac-sha1, after the modern ones, for old devices.
+    pub legacy_ssh_algorithms: bool,
 }
 
 impl DeviceParams {
@@ -32,6 +36,8 @@ impl DeviceParams {
             secret: None,
             key_file: None,
             timeout: DEFAULT_TIMEOUT,
+            session_log: None,
+            legacy_ssh_algorithms: false,
         }
     }
 }

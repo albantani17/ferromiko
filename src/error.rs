@@ -5,7 +5,7 @@ pub enum Error {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("ssh error: {0}")]
-    Ssh(#[from] ssh2::Error),
+    Ssh(#[from] russh::Error),
     #[error("invalid pattern: {0}")]
     Regex(#[from] regex::Error),
     #[error("authentication failed: {0}")]
@@ -20,4 +20,10 @@ pub enum Error {
     CommitFailed(String),
     #[error("unknown device type: {0}")]
     UnknownDeviceType(String),
+    #[error("config command `{command}` failed:\n{output}")]
+    ConfigInvalid { command: String, output: String },
+    #[error("scp failed: {0}")]
+    Scp(String),
+    #[error("textfsm failed: {0}")]
+    TextFsm(String),
 }
